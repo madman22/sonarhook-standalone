@@ -84,7 +84,7 @@ func (sh *SonarHook) Start(ctx context.Context) error {
 	sh.ctx, sh.cancel = context.WithCancel(ctx)
 	sh.started = time.Now()
 
-	ip := "167.172.254.131"
+	ip := ""
 	port := "443"
 
 	sh.srv = &http.Server{
