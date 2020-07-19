@@ -12,11 +12,14 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"crypto/tls"
 )
 
 func main() {
 	start := time.Now()
 	sh := NewSonarHookService()
+	sh.configTLS()
+
 	if err := sh.Start(context.Background()); err != nil {
 		panic(err.Error())
 	}
@@ -39,11 +42,38 @@ type SonarHook struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	srv     *http.Server
+	tls     *tls.Config
 }
 
 func NewSonarHookService() *SonarHook {
 	return &SonarHook{}
 }
+
+
+// config tls parameters
+func (sh *SonarHook) configTLS() {
+	sh.tls = &tls.Config{
+		PreferServerCipherSuites: true,
+		CurvePreferences: []tls.CurveID{
+			tls.CurveP256,
+			tls.X25519,
+		},
+		MinVersion: tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+}
+
+
+
 
 func (sh *SonarHook) Start(ctx context.Context) error {
 	sh.runmux.Lock()
@@ -54,23 +84,28 @@ func (sh *SonarHook) Start(ctx context.Context) error {
 	sh.ctx, sh.cancel = context.WithCancel(ctx)
 	sh.started = time.Now()
 
-	port := ":9000"
+	ip := "167.172.254.131"
+	port := "443"
 
 	sh.srv = &http.Server{
-		Addr:           port,
-		Handler:        sh,
+		Addr:           ip + ":" + port,
+		TLSConfig:		sh.tls,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
+
+	sh.srv.Handler = http.HandlerFunc(sh.ServeHTTP)
+
 	go func() {
-		if err := sh.srv.ListenAndServe(); err != nil {
+		if err := sh.srv.ListenAndServeTLS("./webhook.crt","./webhook.key"); err != nil {
 			fmt.Println(err.Error())
 		}
 	}()
 
 	go func() {
 		select {
+
 		case <-sh.ctx.Done():
 			sh.runmux.Lock()
 			sh.started = time.Time{}
@@ -104,11 +139,21 @@ type SonarEvent struct {
 
 func (sh *SonarHook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
+	case "GET":
+		w.WriteHeader(http.StatusOK)
+		return
 	case "POST":
 		sh.servePOST(w, r)
 		return
 	default:
-		http.Error(w, "Bad Method", http.StatusBadRequest)
+		// checking enable and jamming save first does a webhook check from the sonar instance
+		//the little code snippet below greenlights it.
+		if (r.Host == "instancename.sonar.software") && (r.RequestURI == "/") {
+			fmt.Printf("You're Mr Lebowski, I'm the dude..\n")
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "Bad Method", http.StatusBadRequest)
+		}
 		return
 	}
 }
@@ -144,3 +189,4 @@ func (sh *SonarHook) parseEvent(se SonarEvent) {
 		fmt.Println("Event not implemented", se)
 	}
 }
+
